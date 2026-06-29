@@ -1,0 +1,82 @@
+module tb_ram;
+    // Testbench Signals
+    reg clk;
+    reg CS;
+    reg RW;
+    reg [5:0] addr;
+    reg [7:0] in;
+    wire [7:0] out;
+
+    // Simulation Variables
+    integer file;
+    integer i;
+    integer rand_addr;
+    integer rand_bit;
+    reg [7:0] fault_mask;
+    reg [7:0] expected_data [0:9];
+
+    // Instantiate the Unit Under Test (UUT)
+    c_ram uut (
+        .clk(clk),
+        .CS(CS),
+        .RW(RW),
+        .addr(addr),
+        .in(in),
+        .out(out)
+    );
+
+    // Clock Generation: 10ns period (100MHz)
+    always #5 clk = ~clk;
+
+    initial begin
+        // --- 1. Initialization ---
+        clk = 0; CS = 0; RW = 0; addr = 0; in = 0;
+        file = $fopen("conventional_log.csv", "w");
+        $fwrite(file, "Time,Address,Written,Read,FaultInjected\n");
+
+        #10;
+        CS = 1;
+
+        // --- 2. Write Phase ---
+        // Fill the first 10 locations with random data
+        RW = 1;
+        for (i = 0; i < 10; i = i + 1) begin
+            addr = i;
+            in = $urandom % 256;   // Random 8-bit data
+            expected_data[i] = in;  
+            #10;
+        end
+
+        // --- 3. Random Fault Injection ---
+        // Force a bit-flip in the internal memory array to simulate corruption
+        rand_addr = $urandom % 10;   // Select an address within written range
+        rand_bit  = $urandom % 8;    // Select a bit position (0-7)
+        fault_mask = 8'b00000001 << rand_bit;
+
+        // Directly access the internal memory of the UUT to flip the bit
+        uut.data[rand_addr] = uut.data[rand_addr] ^ fault_mask;
+
+        $display("Fault injected at Address=%0d Bit=%0d", rand_addr, rand_bit);
+
+        // --- 4. Read Phase & Logging ---
+        RW = 0;
+        for (i = 0; i < 10; i = i + 1) begin
+            addr = i;
+            #10; // Wait for synchronous read to complete
+
+            $fwrite(file, "%0t,%0d,%h,%h,%s\n",
+                    $time,
+                    addr,
+                    expected_data[addr],
+                    out,
+                    (i == rand_addr) ? "YES" : "NO");
+        end
+
+        // --- 5. Cleanup ---
+        #20;
+        $fclose(file);
+        $display("Simulation complete. Results saved to conventional_log.csv");
+        $finish;
+    end
+
+endmodule
