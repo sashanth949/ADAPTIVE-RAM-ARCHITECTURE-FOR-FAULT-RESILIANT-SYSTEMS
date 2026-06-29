@@ -1,0 +1,42 @@
+module secded_encoder(
+input  [7:0] din,
+output [12:0] code_out
+);
+
+// Data bits
+wire d0,d1,d2,d3,d4,d5,d6,d7;
+assign d0 = din[0];
+assign d1 = din[1];
+assign d2 = din[2];
+assign d3 = din[3];
+assign d4 = din[4];
+assign d5 = din[5];
+assign d6 = din[6];
+assign d7 = din[7];
+
+// Parity bits
+wire p1,p2,p4,p8;
+assign p1 = d0 ^ d1 ^ d3 ^ d4 ^ d6;
+assign p2 = d0 ^ d2 ^ d3 ^ d5 ^ d6;
+assign p4 = d1 ^ d2 ^ d3 ^ d7;
+assign p8 = d4 ^ d5 ^ d6 ^ d7;
+
+// Temp word
+wire [11:0] temp;
+assign temp = {
+d7,d6,d5,d4,
+p8,
+d3,d2,d1,
+p4,
+d0,
+p2,
+p1
+};
+
+// Overall parity
+wire p0;
+assign p0 = ^temp;
+
+assign code_out = {p0, temp};
+
+endmodule
