@@ -1,0 +1,101 @@
+module ram_ecc_remap (
+    input  wire        clk,
+    input  wire        CS,
+    input  wire        RW,          // 1 = write, 0 = read
+    input  wire [5:0]  addr,
+    input  wire [7:0]  in,
+    output wire [7:0]  out,
+    output wire        ed,             // error detected
+    output wire        degraded_mode   // 1 when using remapped address
+);
+
+// ================= MAIN & SPARE MEMORY =================
+(* ram_style = "block" *) reg [12:0] mem [0:63];
+(* ram_style = "block" *) reg [12:0] spare_mem [0:3];
+
+// ================= REMAP & CONTROL REGISTERS =================
+reg [1:0]  spare_count = 0;
+reg        remap_valid [0:63];
+reg [1:0]  remap_table [0:63];
+reg [12:0] ram_out;
+integer i;
+initial begin
+    for (i = 0; i < 64; i = i + 1) begin
+        remap_valid[i] = 1'b0;
+        remap_table[i] = 2'b00;
+    end
+end
+
+// ================= ENCODER / DECODER =================
+wire [12:0] enc_out;
+secded_encoder enc_inst (.din(in), .code_out(enc_out));
+
+wire [7:0]  dec_data;
+wire        single_error, double_error;
+secded_decoder dec_inst (.cin(ram_out), .dout(dec_data), .single_error(single_error), .double_error(double_error));
+
+wire [12:0] corrected_enc_out;
+secded_encoder enc_corrected (.din(dec_data), .code_out(corrected_enc_out));
+
+assign ed = single_error | double_error;
+
+// ================= ADDRESS SELECTION =================
+wire        use_spare = remap_valid[addr];
+wire [1:0]  spare_idx = remap_table[addr];
+assign degraded_mode = use_spare | (spare_count == 4);
+
+// ================= LOGIC SIGNALS =================
+reg [5:0]  fault_addr_reg;
+reg        fault_pending;
+reg        needs_recheck;
+reg        do_remap;
+
+// ================= UNIFIED SEQUENTIAL BLOCK =================.
+always @(posedge clk) begin
+    // --- 1. Memory Access Logic ---
+    if (CS) begin
+        if (RW) begin
+            if (use_spare) spare_mem[spare_idx] <= enc_out;
+            else           mem[addr]            <= enc_out;
+        end else begin
+            if (use_spare) ram_out <= spare_mem[spare_idx];
+            else           ram_out <= mem[addr];
+        end
+    end
+
+    // --- 2. Your Original Self-Healing Logic (Strictly Preserved) ---
+    if (!CS) begin
+        fault_pending <= 1'b0;
+        needs_recheck <= 1'b0;
+    end else if (!RW) begin
+        fault_addr_reg <= addr;
+        if (single_error && !remap_valid[addr] && !double_error) begin
+            fault_pending <= 1'b1;
+            needs_recheck <= 1'b1;
+        end else begin
+            fault_pending <= 1'b0;
+            needs_recheck <= 1'b0;
+        end
+    end
+
+    // --- 3. Remap Decision ---
+    do_remap <= 1'b0; // Default pulse low
+    if (fault_pending && needs_recheck) begin
+        if (single_error && !remap_valid[fault_addr_reg] && spare_count < 4) begin
+            do_remap <= 1'b1;
+        end
+        needs_recheck <= 1'b0;
+    end
+
+    // --- 4. Execution of Remap ---
+    if (do_remap) begin
+        remap_valid[fault_addr_reg] <= 1'b1;
+        remap_table[fault_addr_reg] <= spare_count;
+        spare_mem[spare_count]      <= corrected_enc_out; 
+        spare_count                 <= spare_count + 1;
+    end
+end
+
+assign out = dec_data;
+
+endmodule
