@@ -1,0 +1,117 @@
+module ram_ecc_raid1(
+    input clk,
+    input CS,
+    input RW,
+    input [5:0] addr,
+    input [7:0] in,
+    input continue_op,
+    input remap_trigger,
+    input [5:0] remap_addr,
+    output [7:0] out,
+    output ed,
+    output raid_error,
+    output reg alert_80,
+    output reg alert_90,
+    output degraded_mode
+);
+
+    // ============================================================
+    // MEMORY
+    // ============================================================
+    reg [12:0] mem_A [0:63];
+    reg [12:0] mem_B [0:63];
+    reg [12:0] spare_mem [0:3];
+
+    // ============================================================
+    // CONTROL
+    // ============================================================
+    reg [2:0] spare_count = 0;
+    reg [63:0] remap_valid = 0;
+    reg [127:0] remap_table = 0;
+    reg [6:0] used_locations = 0;
+
+    reg [12:0] data_A, data_B, ram_out;
+    reg use_spare;
+    reg [1:0] spare_idx;
+
+    // ============================================================
+    // DEGRADED MODE (COMBINATIONAL - PERFECT)
+    // ============================================================
+    assign degraded_mode = (spare_count >= 4);
+
+    // ============================================================
+    // ECC
+    // ============================================================
+    wire [12:0] enc_out;
+    secded_encoder enc (.din(in), .code_out(enc_out));
+
+    wire [7:0] dec_A, dec_B, dec_final;
+    wire err_A, err_B, f_se, f_de;
+
+    secded_decoder dA (.cin(data_A), .dout(dec_A), .single_error(err_A));
+    secded_decoder dB (.cin(data_B), .dout(dec_B), .single_error(err_B));
+    secded_decoder dF (.cin(ram_out), .dout(dec_final), .single_error(f_se), .double_error(f_de));
+
+    assign out = dec_final;
+    assign ed = f_se | f_de;
+    assign raid_error = (data_A !== data_B);
+
+    // ============================================================
+    // MAIN LOGIC
+    // ============================================================
+    always @(posedge clk) begin
+
+        // Pipeline
+        data_A    <= mem_A[addr];
+        data_B    <= mem_B[addr];
+        use_spare <= remap_valid[addr];
+        spare_idx <= remap_table[addr*2 +: 2];
+
+        // Capacity alerts
+        alert_80 <= (used_locations >= 51);
+        alert_90 <= (used_locations >= 58);
+
+        // ========================================================
+        // WRITE
+        // ========================================================
+        if (CS && RW && !degraded_mode) begin
+            mem_A[addr] <= enc_out;
+            mem_B[addr] <= enc_out;
+
+            if (used_locations < 64)
+                used_locations <= used_locations + 1;
+        end
+
+        // ========================================================
+        // READ
+        // ========================================================
+        if (CS && !RW) begin
+            if (degraded_mode)
+                ram_out <= 13'h000;
+
+            else if (use_spare)
+                ram_out <= spare_mem[spare_idx];
+
+            else
+                ram_out <= (err_A && !err_B) ? data_B : data_A;
+        end
+
+        // ========================================================
+        // REMAP (SELF-HEAL)
+        // ========================================================
+        if (remap_trigger && (spare_count < 4)) begin
+
+            remap_valid[remap_addr]        <= 1'b1;
+            remap_table[remap_addr*2 +: 2] <= spare_count[1:0];
+
+            // Store correct copy (prefer B if A faulty)
+            if (!err_A)
+                spare_mem[spare_count[1:0]] <= mem_A[remap_addr];
+            else
+                spare_mem[spare_count[1:0]] <= mem_B[remap_addr];
+
+            spare_count <= spare_count + 1;
+        end
+    end
+
+endmodule
