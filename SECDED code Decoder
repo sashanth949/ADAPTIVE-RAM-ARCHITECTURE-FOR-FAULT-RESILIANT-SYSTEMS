@@ -1,0 +1,78 @@
+module secded_decoder(
+input  [12:0] cin,
+output [7:0]  dout,
+output reg    single_error,
+output reg    double_error
+);
+
+// Bit split
+wire p0,p1,p2,d0,p4,d1,d2,d3,p8,d4,d5,d6,d7;
+
+assign p0 = cin[12];
+assign p1 = cin[0];
+assign p2 = cin[1];
+assign d0 = cin[2];
+assign p4 = cin[3];
+assign d1 = cin[4];
+assign d2 = cin[5];
+assign d3 = cin[6];
+assign p8 = cin[7];
+assign d4 = cin[8];
+assign d5 = cin[9];
+assign d6 = cin[10];
+assign d7 = cin[11];
+
+// Syndrome
+wire s1,s2,s4,s8;
+assign s1 = p1 ^ d0 ^ d1 ^ d3 ^ d4 ^ d6;
+assign s2 = p2 ^ d0 ^ d2 ^ d3 ^ d5 ^ d6;
+assign s4 = p4 ^ d1 ^ d2 ^ d3 ^ d7;
+assign s8 = p8 ^ d4 ^ d5 ^ d6 ^ d7;
+
+wire [3:0] synd = {s8,s4,s2,s1};
+
+// Overall parity
+wire parity_check;
+assign parity_check = ^cin;
+
+reg [12:0] corrected;
+
+always @(*) begin
+    corrected = cin;
+    single_error = 0;
+    double_error = 0;
+
+    if (synd == 0 && parity_check == 0) begin
+        // No error
+    end
+    else if (synd != 0 && parity_check == 1) begin
+        single_error = 1;
+ case (synd)
+    4'd1:  corrected[0]  = ~corrected[0];  // p1
+    4'd2:  corrected[1]  = ~corrected[1];  // p2
+    4'd3:  corrected[2]  = ~corrected[2];  // d0
+    4'd4:  corrected[3]  = ~corrected[3];  // p4
+    4'd5:  corrected[4]  = ~corrected[4];  // d1
+    4'd6:  corrected[5]  = ~corrected[5];  // d2
+    4'd7:  corrected[6]  = ~corrected[6];  // d3
+    4'd8:  corrected[7]  = ~corrected[7];  // p8
+    4'd9:  corrected[8]  = ~corrected[8];  // d4
+    4'd10: corrected[9]  = ~corrected[9];  // d5
+    4'd11: corrected[10] = ~corrected[10]; // d6
+    4'd12: corrected[11] = ~corrected[11]; // d7
+endcase
+    end
+else if (synd == 0 && parity_check == 1) begin
+    single_error = 1;
+    corrected[12] = ~corrected[12];
+end
+    else begin
+        double_error = 1;
+    end
+end
+
+assign dout = {
+corrected[11], corrected[10], corrected[9], corrected[8],
+corrected[6], corrected[5], corrected[4], corrected[2]
+};
+endmodule
