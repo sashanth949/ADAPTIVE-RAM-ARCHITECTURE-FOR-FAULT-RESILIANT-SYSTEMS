@@ -1,0 +1,81 @@
+module ecc_ram(
+input clk,
+input CS,
+input RW,
+input [5:0] addr,
+input [7:0] in,
+
+// NEW FAULT INPUTS
+input fault_en,
+input [5:0] fault_addr,
+input [12:0] fault_mask,
+
+output [7:0] out,
+output [7:0] raw_out,
+output degraded_mode,
+output ed
+);
+
+reg [12:0] mem [63:0];
+reg [12:0] ram_out;
+
+reg [63:0] fault_history;
+initial fault_history = 64'b0;
+reg fault_done=0;
+
+// Encoder
+wire [12:0] enc_out;
+secded_encoder enc_inst(.din(in), .code_out(enc_out));
+
+// Memory access + fault injection
+always @(posedge clk) begin
+    if (CS) begin
+        // WRITE
+        if (RW) begin
+            mem[addr] <= enc_out;
+        end
+        
+        // FAULT INJECTION (only once)
+        if (fault_en && !fault_done) begin
+            mem[fault_addr] <= mem[fault_addr] ^ fault_mask;
+            fault_done <= 1;
+        end
+
+        if (!fault_en)
+            fault_done <= 0;
+        
+        // READ
+        if (!RW) begin
+            ram_out <= mem[addr];
+        end
+    end
+end
+
+// Decoder
+wire [7:0] dec_data;
+wire single_error,double_error;
+
+secded_decoder dec_inst(
+.cin(ram_out),
+.dout(dec_data),
+.single_error(single_error),
+.double_error(double_error)
+);
+
+assign ed = single_error | double_error;
+
+// Degraded mode
+always @(posedge clk) begin
+    if (CS && !RW && double_error)
+        fault_history[addr] <= 1'b1;
+end
+
+assign degraded_mode = fault_history[addr];
+assign out = dec_data;
+
+assign raw_out = {
+ram_out[11],ram_out[10],ram_out[9],ram_out[8],
+ram_out[6],ram_out[5],ram_out[4],ram_out[2]
+};
+
+endmodule
