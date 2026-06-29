@@ -1,0 +1,125 @@
+module tb_raid1_ram;
+
+    reg clk = 0, CS = 0, RW = 0;
+    reg [5:0] addr = 0;
+    reg [7:0] in = 0;
+    reg continue_op = 1;
+    reg remap_trigger = 0;
+    reg [5:0] remap_addr = 0;
+
+    wire [7:0] out;
+    wire ed, raid_error, alert_80, alert_90, degraded_mode;
+
+    integer file, i;
+    reg [32*8:1] status;
+
+    ram_ecc_raid1 uut (
+        .clk(clk), .CS(CS), .RW(RW), .addr(addr), .in(in),
+        .continue_op(continue_op),
+        .remap_trigger(remap_trigger), .remap_addr(remap_addr),
+        .out(out), .ed(ed), .raid_error(raid_error),
+        .alert_80(alert_80), .alert_90(alert_90),
+        .degraded_mode(degraded_mode)
+    );
+
+    always #5 clk = ~clk;
+
+    initial begin
+        file = $fopen("raid1_results.csv", "w");
+        $fwrite(file, "Time,Addr,Written,Read,ED,RAID_ERR,Alert80,Alert90,Degraded,Status\n");
+
+        CS = 1;
+
+        // ========================================================
+        // PHASE 1: WRITE
+        // ========================================================
+        RW = 1;
+        for (i = 0; i < 64; i = i + 1) begin
+            addr = i;
+            in = $random & 8'hFF;
+
+            @(posedge clk); #2;
+
+            status = (alert_90) ? "ALERT_90" :
+                     (alert_80) ? "ALERT_80" : "NORMAL";
+
+            $fwrite(file,"%0t,%0d,%02h,,%b,%b,%b,%b,%b,%s\n",
+                    $time,i,in,ed,raid_error,alert_80,alert_90,degraded_mode,status);
+        end
+
+        // ========================================================
+        // PHASE 2: SINGLE ERROR RECOVERY
+        // ========================================================
+        RW = 0;
+        for (i = 0; i < 4; i = i + 1) begin
+            uut.mem_A[i] = uut.mem_A[i] ^ 13'h001;
+
+            addr = i;
+            repeat(2) @(posedge clk); #2;
+
+            $fwrite(file,"%0t,%0d,,%02h,%b,%b,%b,%b,%b,RECOVERY\n",
+                    $time,i,out,ed,raid_error,alert_80,alert_90,degraded_mode);
+        end
+
+        // ========================================================
+        // PHASE 3: DUAL FAILURE
+        // ========================================================
+        for (i = 4; i < 6; i = i + 1) begin
+            uut.mem_A[i] = uut.mem_A[i] ^ 13'h001;
+            uut.mem_B[i] = uut.mem_B[i] ^ 13'h002;
+
+            addr = i;
+            repeat(2) @(posedge clk); #2;
+
+            $fwrite(file,"%0t,%0d,,%02h,%b,%b,%b,%b,%b,DUAL_FAILURE\n",
+                    $time,i,out,ed,raid_error,alert_80,alert_90,degraded_mode);
+        end
+
+        // ========================================================
+        // PHASE 4: SPARE ALLOCATION (UNCHANGED)
+        // ========================================================
+        RW = 0;
+
+        for (i = 10; i < 14; i = i + 1) begin
+
+            // Inject fault
+            uut.mem_A[i] = uut.mem_A[i] ^ 13'h001;
+
+            // Allow pipeline
+            addr = i;
+            @(posedge clk);
+
+            // Trigger remap
+            remap_addr = i;
+            remap_trigger = 1;
+
+            @(posedge clk);   // remap occurs here
+
+            remap_trigger = 0;
+
+            // Stabilize
+            repeat(2) @(posedge clk); #2;
+
+            $display("Spare count = %0d", uut.spare_count);
+
+            $fwrite(file,"%0t,%0d,,%02h,%b,%b,%b,%b,%b,SPARE_ALLOCATED\n",
+                    $time,i,out,ed,raid_error,alert_80,alert_90,degraded_mode);
+        end
+
+        // ========================================================
+        // FINAL CHECK
+        // ========================================================
+        RW = 1;
+        addr = 20;
+        in = 8'hFF;
+
+        @(posedge clk); #2;
+
+        $fwrite(file,"%0t,%0d,%02h,,%b,%b,%b,%b,%b,FINAL_WRITE\n",
+                $time,addr,in,ed,raid_error,alert_80,alert_90,degraded_mode);
+
+        $display("✅ Simulation Complete");
+        $finish;
+    end
+
+endmodule
